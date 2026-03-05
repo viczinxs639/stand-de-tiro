@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>FPS Stand Pro Ultimate</title>
+
+<style>
+body { margin:0; overflow:hidden; background:#0e0e0e; font-family:Arial; }
+
+#menu{
+position:absolute;
+width:100%;
+height:100%;
+background:rgba(0,0,0,0.95);
+display:flex;
+justify-content:center;
+align-items:center;
+flex-direction:column;
+color:white;
+z-index:20;
+}
+
+button{
+padding:14px 32px;
+font-size:16px;
+background:#111;
+color:white;
+border:2px solid #fff;
+cursor:pointer;
+margin-top:12px;
+transition:0.2s;
+}
+button:hover{background:#222;}
+
+#hud{
+position:absolute;
+top:15px;
+left:50%;
+transform:translateX(-50%);
+color:white;
+z-index:10;
+text-align:center;
+}
+
+.barContainer{
+width:300px;
+height:18px;
+background:#222;
+margin:6px auto;
+border-radius:8px;
+overflow:hidden;
+box-shadow:0 0 12px black inset;
+}
+
+.bar{
+height:100%;
+width:100%;
+transition:0.15s;
+}
+
+#ammoBar{background:linear-gradient(90deg,#00aaff,#002a66);}
+#timeBar{background:linear-gradient(90deg,#00ff88,#005533);}
+#reloadBar{background:linear-gradient(90deg,#ffaa00,#ff3300); width:0%;}
+
+#score{
+font-size:18px;
+margin-bottom:6px;
+}
+
+#crosshair{
+position:absolute;
+top:50%;
+left:50%;
+width:22px;
+height:22px;
+margin-left:-11px;
+margin-top:-11px;
+z-index:15;
+}
+#crosshair:before,#crosshair:after{
+content:'';
+position:absolute;
+background:white;
+}
+#crosshair:before{width:2px;height:22px;left:10px;}
+#crosshair:after{height:2px;width:22px;top:10px;}
+
+#damageFlash{
+position:absolute;
+width:100%;
+height:100%;
+background:rgba(255,0,0,0);
+pointer-events:none;
+z-index:18;
+transition:0.2s;
+}
+</style>
+</head>
+
+<body>
+
+<div id="menu">
+<h1>FPS Stand</h1>
+<button onclick="startGame()">Iniciar</button>
+</div>
+
+<div id="hud">
+<div id="score">Pontos: 0</div>
+<div>Nível: <span id="phaseDisplay">1</span></div>
+
+Tempo
+<div class="barContainer">
+<div id="timeBar" class="bar"></div>
+</div>
+
+Munição
+<div class="barContainer">
+<div id="ammoBar" class="bar"></div>
+</div>
+
+Recarga
+<div class="barContainer">
+<div id="reloadBar" class="bar"></div>
+</div>
+</div>
+
+<div id="crosshair"></div>
+<div id="damageFlash"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+
+let scene,camera,renderer;
+let targets=[];
+let keys={};
+let gameState="menu";
+let score=0;
+let phase=1,maxPhase=20;
+let bullets=8,maxBullets=8;
+let timeLeft=45,maxTime=45;
+let sensitivity=0.002;
+let moveSpeed=0.09;
+let timerInterval;
+let weaponGroup,muzzleFlash,flashMesh;
+let reloading=false;
+let spread=0;
+let bench;
+
+init();
+animate();
+
+function init(){
+
+scene=new THREE.Scene();
+scene.background=new THREE.Color(0x11151a);
+
+camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,1000);
+camera.position.set(0,1.7,5);
+
+renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
+renderer.physicallyCorrectLights=true;
+document.body.appendChild(renderer.domElement);
+
+const hemi=new THREE.HemisphereLight(0xffffff,0x222222,0.6);
+scene.add(hemi);
+
+const dir=new THREE.DirectionalLight(0xffffff,1.3);
+dir.position.set(5,10,5);
+dir.castShadow=true;
+scene.add(dir);
+
+createRoom();
+createWeapon();
+
+document.addEventListener("keydown",e=>{
+keys[e.key.toLowerCase()]=true;
+if(e.key.toLowerCase()==="r") reload();
+if(e.key==="Escape" && gameState==="playing") pauseGame();
+});
+document.addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+
+document.addEventListener("mousemove",e=>{
+if(document.pointerLockElement===document.body && gameState==="playing"){
+camera.rotation.y-=e.movementX*sensitivity;
+camera.rotation.x-=e.movementY*sensitivity;
+camera.rotation.x=Math.max(-Math.PI/4,Math.min(Math.PI/4,camera.rotation.x));
+}
+});
+
+document.addEventListener("click",()=>{
+if(gameState==="playing" && document.pointerLockElement===document.body){
+shoot();
+}
+});
+}
+
+function createRoom(){
+
+const mat=new THREE.MeshStandardMaterial({color:0x2a2f35});
+const floorMat=new THREE.MeshStandardMaterial({color:0x3a3f44});
+
+const floor=new THREE.Mesh(new THREE.BoxGeometry(20,1,20),floorMat);
+floor.position.y=-0.5;
+floor.receiveShadow=true;
+scene.add(floor);
+
+const backWall=new THREE.Mesh(new THREE.BoxGeometry(20,8,1),mat);
+backWall.position.set(0,4,-10);
+scene.add(backWall);
+
+const leftWall=new THREE.Mesh(new THREE.BoxGeometry(1,8,20),mat);
+leftWall.position.set(-10,4,0);
+scene.add(leftWall);
+
+const rightWall=new THREE.Mesh(new THREE.BoxGeometry(1,8,20),mat);
+rightWall.position.set(10,4,0);
+scene.add(rightWall);
+
+/* Bancada visível, menor e não bloqueia tiro */
+bench=new THREE.Mesh(
+new THREE.BoxGeometry(20,0.6,0.8),
+new THREE.MeshStandardMaterial({color:0x222222})
+);
+bench.position.set(0,0.3,2.8);
+bench.receiveShadow=true;
+scene.add(bench);
+}
+
+function createWeapon(){
+
+weaponGroup=new THREE.Group();
+
+const gun=new THREE.Mesh(
+new THREE.BoxGeometry(0.3,0.2,1.2),
+new THREE.MeshStandardMaterial({color:0x111111,metalness:0.8,roughness:0.3})
+);
+
+const hand=new THREE.Mesh(
+new THREE.BoxGeometry(0.4,0.6,0.3),
+new THREE.MeshStandardMaterial({color:0xffccaa})
+);
+hand.position.set(-0.3,-0.3,0);
+
+flashMesh=new THREE.Mesh(
+new THREE.SphereGeometry(0.15,16,16),
+new THREE.MeshBasicMaterial({color:0xffaa00})
+);
+flashMesh.position.set(0,0,-0.7);
+flashMesh.visible=false;
+
+muzzleFlash=new THREE.PointLight(0xffaa00,0,3);
+muzzleFlash.position.set(0,0,-0.7);
+
+weaponGroup.add(gun,hand,flashMesh,muzzleFlash);
+weaponGroup.position.set(0.6,-0.6,-1.2);
+
+camera.add(weaponGroup);
+scene.add(camera);
+}
+
+function createTarget(x,z){
+
+const group=new THREE.Group();
+
+const bodyMat=new THREE.MeshStandardMaterial({color:0x0044aa});
+const headMat=new THREE.MeshStandardMaterial({color:0xffccaa});
+
+const body=new THREE.Mesh(new THREE.BoxGeometry(0.6,1.2,0.4),bodyMat);
+body.position.y=1;
+
+const head=new THREE.Mesh(new THREE.SphereGeometry(0.3,16,16),headMat);
+head.position.y=2.1;
+head.name="head";
+
+const armL=new THREE.Mesh(new THREE.BoxGeometry(0.2,1,0.2),bodyMat);
+armL.position.set(-0.5,1.2,0);
+const armR=armL.clone(); armR.position.x=0.5;
+
+const legL=new THREE.Mesh(new THREE.BoxGeometry(0.25,1,0.25),bodyMat);
+legL.position.set(-0.2,0.2,0);
+const legR=legL.clone(); legR.position.x=0.2;
+
+group.add(body,head,armL,armR,legL,legR);
+group.position.set(x,0,z);
+
+group.userData={
+speed:0.02 + phase*0.006,
+dirX:Math.random()>0.5?1:-1,
+dirZ:Math.random()>0.5?1:-1,
+range:2+Math.random()*3,
+timer:0
+};
+
+scene.add(group);
+targets.push(group);
+}
+
+function spawnPhase(){
+for(let i=0;i<phase+2;i++){
+createTarget((Math.random()*6)-3,-8-Math.random()*3);
+}
+}
+
+function shoot(){
+
+if(reloading) return;
+if(bullets<=0){ reload(); return; }
+
+bullets--;
+spread+=0.003;
+updateHUD();
+
+flashMesh.visible=true;
+muzzleFlash.intensity=3;
+setTimeout(()=>{flashMesh.visible=false;muzzleFlash.intensity=0;},60);
+
+weaponGroup.rotation.x=-0.05;
+setTimeout(()=>weaponGroup.rotation.x=0,80);
+
+const ray=new THREE.Raycaster();
+let spreadX=(Math.random()-0.5)*spread;
+let spreadY=(Math.random()-0.5)*spread;
+ray.setFromCamera(new THREE.Vector2(spreadX,spreadY),camera);
+
+const hit=ray.intersectObjects(targets,true);
+
+if(hit.length>0){
+let obj=hit[0].object;
+let target=obj.parent;
+if(obj.name==="head") score+=400;
+else score+=120;
+
+scene.remove(target);
+targets=targets.filter(t=>t!==target);
+
+if(targets.length===0){
+if(phase>=maxPhase){
+finalVictory();
+}else{
+phaseVictory();
+}
+}
+}
+updateHUD();
+}
+
+function phaseVictory(){
+gameState="phaseWin";
+document.exitPointerLock();
+document.getElementById("menu").innerHTML=
+"<h1>Nível "+phase+" concluído</h1>\
+<button onclick='nextPhase()'>Continuar</button>\
+<button onclick='backToMenu()'>Voltar</button>";
+document.getElementById("menu").style.display="flex";
+}
+
+function nextPhase(){
+phase++;
+bullets=maxBullets;
+timeLeft=maxTime;
+spread=0;
+document.getElementById("menu").style.display="none";
+document.body.requestPointerLock();
+spawnPhase();
+gameState="playing";
+updateHUD();
+}
+
+function backToMenu(){
+location.reload();
+}
+
+function finalVictory(){
+gameState="victory";
+document.exitPointerLock();
+document.getElementById("menu").innerHTML=
+"<h1>Você venceu todos os 20 níveis</h1>\
+<button onclick='location.reload()'>Reiniciar</button>";
+document.getElementById("menu").style.display="flex";
+}
+
+function reload(){
+if(reloading || bullets===maxBullets) return;
+reloading=true;
+let reloadTime=1000;
+let start=Date.now();
+
+let anim=setInterval(()=>{
+let t=(Date.now()-start)/reloadTime;
+document.getElementById("reloadBar").style.width=(t*100)+"%";
+weaponGroup.rotation.z=Math.sin(t*Math.PI)*0.4;
+
+if(t>=1){
+clearInterval(anim);
+weaponGroup.rotation.z=0;
+document.getElementById("reloadBar").style.width="0%";
+bullets=maxBullets;
+reloading=false;
+}
+},16);
+}
+
+function startGame(){
+gameState="playing";
+score=0;
+phase=1;
+bullets=maxBullets;
+timeLeft=maxTime;
+targets.forEach(t=>scene.remove(t));
+targets=[];
+document.getElementById("menu").style.display="none";
+document.body.requestPointerLock();
+spawnPhase();
+startTimer();
+updateHUD();
+}
+
+function startTimer(){
+clearInterval(timerInterval);
+timerInterval=setInterval(()=>{
+if(gameState==="playing"){
+timeLeft--;
+updateHUD();
+if(timeLeft<=0) gameOver();
+}
+},1000);
+}
+
+function updateHUD(){
+document.getElementById("score").innerText="Pontos: "+score;
+document.getElementById("phaseDisplay").innerText=phase;
+document.getElementById("ammoBar").style.width=(bullets/maxBullets*100)+"%";
+document.getElementById("timeBar").style.width=(timeLeft/maxTime*100)+"%";
+}
+
+function pauseGame(){
+gameState="paused";
+document.exitPointerLock();
+document.getElementById("menu").innerHTML=
+"<h1>Pausado</h1>\
+<button onclick='resumeGame()'>Continuar</button>\
+<button onclick='location.reload()'>Reiniciar</button>";
+document.getElementById("menu").style.display="flex";
+}
+
+function resumeGame(){
+gameState="playing";
+document.getElementById("menu").style.display="none";
+document.body.requestPointerLock();
+}
+
+function gameOver(){
+gameState="over";
+clearInterval(timerInterval);
+document.exitPointerLock();
+document.getElementById("menu").innerHTML=
+"<h1>Game Over</h1>\
+<button onclick='location.reload()'>Reiniciar</button>";
+document.getElementById("menu").style.display="flex";
+}
+
+function animate(){
+requestAnimationFrame(animate);
+
+if(gameState==="playing"){
+
+let newX=camera.position.x;
+let newZ=camera.position.z;
+
+if(keys["w"]) newZ-=moveSpeed;
+if(keys["s"]) newZ+=moveSpeed;
+if(keys["a"]) newX-=moveSpeed;
+if(keys["d"]) newX+=moveSpeed;
+
+/* bancada bloqueia só o jogador */
+if(newZ<2.9) newZ=2.9;
+
+if(newX>-4 && newX<4) camera.position.x=newX;
+if(newZ<6) camera.position.z=newZ;
+
+targets.forEach(t=>{
+t.userData.timer++;
+
+if(t.userData.timer%100===0){
+t.userData.dirX=Math.random()>0.5?1:-1;
+t.userData.dirZ=Math.random()>0.5?1:-1;
+}
+
+t.position.x+=t.userData.speed*t.userData.dirX;
+t.position.z+=t.userData.speed*0.4*t.userData.dirZ;
+
+if(Math.abs(t.position.x)>t.userData.range) t.userData.dirX*=-1;
+if(t.position.z>-4) t.userData.dirZ=-1;
+});
+}
+
+renderer.render(scene,camera);
+}
+</script>
+
+</body>
+</html>
